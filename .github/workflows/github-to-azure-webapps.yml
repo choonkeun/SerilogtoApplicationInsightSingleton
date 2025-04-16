@@ -1,0 +1,125 @@
+name: Deploy ASP.NET Core App to Azure WebApp with service principle
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WEBAPP_NAME: SerilogtoApplicationInsightSingleton-20250404
+  PUBLISH_PATH: ./publish
+  ROOT_PATH: ./SerilogtoApplicationInsightSingleton
+  ZIP_FILE: webapp.zip
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_VERSION: 8.0.x
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Find project file
+        id: find-project
+        run: |
+          PROJECT_FILE=$(find ${{ env.ROOT_PATH }} -maxdepth 1 -name "*.csproj" -print -quit)
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "Error: No .csproj file found in ${{ env.ROOT_PATH }}"
+            exit 1
+          fi
+          echo "Found project file: $PROJECT_FILE"
+          echo "PROJECT_FILE=$PROJECT_FILE" >> $GITHUB_OUTPUT
+
+      - name: Debug project directory
+        run: |
+          pwd
+          ls -R ./SerilogtoApplicationInsightSingleton
+          echo "Selected project file: ${{ steps.find-project.outputs.PROJECT_FILE }}"
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json') }}
+          restore-keys: ${{ runner.os }}-nuget-
+
+      - name: Restore
+        run: dotnet restore "${{ steps.find-project.outputs.PROJECT_FILE }}"
+
+      - name: Build
+        run: dotnet build "${{ steps.find-project.outputs.PROJECT_FILE }}" --configuration Release --no-restore
+
+      - name: Publish
+        run: dotnet publish "${{ steps.find-project.outputs.PROJECT_FILE }}" --configuration Release --no-build --no-restore -o "${{ github.workspace }}/${{ env.PUBLISH_PATH }}"
+
+      - name: Debug publish output
+        run: |
+          echo "Contents of ${{ env.PUBLISH_PATH }}:"
+          ls -R ${{ env.PUBLISH_PATH }}
+          if [ ! -d "${{ env.PUBLISH_PATH }}" ]; then
+            echo "Publish directory not found!"
+            exit 1
+          fi
+
+      - name: Create ZIP file
+        run: |
+          cd ${{ env.PUBLISH_PATH }}
+          zip -r "${{ github.workspace }}/${{ env.ZIP_FILE }}" .
+          ls -l "${{ github.workspace }}/${{ env.ZIP_FILE }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webapp
+          path: ${{ env.ZIP_FILE }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: Development
+      url: ${{ steps.deploy.outputs.webapp-url }}
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: webapp
+          path: .
+
+      - name: Debug download output
+        run: |
+          echo "Contents of current directory:"
+          ls -R
+          if [ ! -f "${{ env.ZIP_FILE }}" ]; then
+            echo "ZIP file not found!"
+            exit 1
+          fi
+
+      - name: Azure Login
+        run: |
+          az login --service-principal \
+            --username "${{ secrets.YAHOO_AZURE_CLIENT_ID }}" \
+            --password "${{ secrets.YAHOO_AZURE_CLIENT_SECRET }}" \
+            --tenant "${{ secrets.YAHOO_AZURE_TENANT_ID }}"
+          az account set --subscription "${{ secrets.YAHOO_AZURE_SUBSCRIPTION_ID }}"
+
+      - name: Deploy
+        id: deploy
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.WEBAPP_NAME }}
+          package: ${{ env.ZIP_FILE }}
+
+      - name: Azure Logout
+        run: az logout
+        if: always()
+        
