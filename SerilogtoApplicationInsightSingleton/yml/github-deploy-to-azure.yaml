@@ -1,4 +1,4 @@
-name: Deploy ASP.NET Core App to Azure WebApp
+name: Deploy ASP.NET Core App to Azure WebApp with service principle
 
 on:
   push:
